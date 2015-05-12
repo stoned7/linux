@@ -8,6 +8,13 @@
 #include <net/addrconf.h>
 #include <net/ip.h>
 
+/* if ipv6 module registers this function is used by xfrm to force all
+ * sockets to relookup their nodes - this is fairly expensive, be
+ * careful
+ */
+void (*__fib6_flush_trees)(struct net *);
+EXPORT_SYMBOL(__fib6_flush_trees);
+
 #define IPV6_ADDR_SCOPE_TYPE(scope)	((scope) << 16)
 
 static inline unsigned int ipv6_addr_scope2type(unsigned int scope)
@@ -133,7 +140,7 @@ void in6_dev_finish_destroy(struct inet6_dev *idev)
 	struct net_device *dev = idev->dev;
 
 	WARN_ON(!list_empty(&idev->addr_list));
-	WARN_ON(idev->mc_list != NULL);
+	WARN_ON(idev->mc_list);
 	WARN_ON(timer_pending(&idev->rs_timer));
 
 #ifdef NET_REFCNT_DEBUG

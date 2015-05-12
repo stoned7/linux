@@ -166,6 +166,9 @@ void sctp_remaddr_proc_exit(struct net *net);
   */
 extern struct kmem_cache *sctp_chunk_cachep __read_mostly;
 extern struct kmem_cache *sctp_bucket_cachep __read_mostly;
+extern long sysctl_sctp_mem[3];
+extern int sysctl_sctp_rmem[3];
+extern int sysctl_sctp_wmem[3];
 
 /*
  *  Section:  Macros, externs, and inlines
@@ -424,6 +427,11 @@ static inline void sctp_assoc_pending_pmtu(struct sock *sk, struct sctp_associat
 
 	sctp_assoc_sync_pmtu(sk, asoc);
 	asoc->pmtu_pending = 0;
+}
+
+static inline bool sctp_chunk_pending(const struct sctp_chunk *chunk)
+{
+	return !list_empty(&chunk->list);
 }
 
 /* Walk through a list of TLV parameters.  Don't trust the

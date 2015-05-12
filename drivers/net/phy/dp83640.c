@@ -257,7 +257,7 @@ static void ext_write(int broadcast, struct phy_device *phydev,
 
 /* Caller must hold extreg_lock. */
 static int tdr_write(int bc, struct phy_device *dev,
-		     const struct timespec *ts, u16 cmd)
+		     const struct timespec64 *ts, u16 cmd)
 {
 	ext_write(bc, dev, PAGE4, PTP_TDR, ts->tv_nsec & 0xffff);/* ns[15:0]  */
 	ext_write(bc, dev, PAGE4, PTP_TDR, ts->tv_nsec >> 16);   /* ns[31:16] */
@@ -411,12 +411,12 @@ static int ptp_dp83640_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	struct dp83640_clock *clock =
 		container_of(ptp, struct dp83640_clock, caps);
 	struct phy_device *phydev = clock->chosen->phydev;
-	struct timespec ts;
+	struct timespec64 ts;
 	int err;
 
 	delta += ADJTIME_FIX;
 
-	ts = ns_to_timespec(delta);
+	ts = ns_to_timespec64(delta);
 
 	mutex_lock(&clock->extreg_lock);
 
@@ -427,7 +427,8 @@ static int ptp_dp83640_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	return err;
 }
 
-static int ptp_dp83640_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
+static int ptp_dp83640_gettime(struct ptp_clock_info *ptp,
+			       struct timespec64 *ts)
 {
 	struct dp83640_clock *clock =
 		container_of(ptp, struct dp83640_clock, caps);
@@ -452,7 +453,7 @@ static int ptp_dp83640_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
 }
 
 static int ptp_dp83640_settime(struct ptp_clock_info *ptp,
-			       const struct timespec *ts)
+			       const struct timespec64 *ts)
 {
 	struct dp83640_clock *clock =
 		container_of(ptp, struct dp83640_clock, caps);
@@ -605,7 +606,7 @@ static void recalibrate(struct dp83640_clock *clock)
 {
 	s64 now, diff;
 	struct phy_txts event_ts;
-	struct timespec ts;
+	struct timespec64 ts;
 	struct list_head *this;
 	struct dp83640_private *tmp;
 	struct phy_device *master = clock->chosen->phydev;
@@ -614,7 +615,7 @@ static void recalibrate(struct dp83640_clock *clock)
 	trigger = CAL_TRIGGER;
 	cal_gpio = 1 + ptp_find_pin(clock->ptp_clock, PTP_PF_PHYSYNC, 0);
 	if (cal_gpio < 1) {
-		pr_err("PHY calibration pin not avaible - PHY is not calibrated.");
+		pr_err("PHY calibration pin not available - PHY is not calibrated.");
 		return;
 	}
 
@@ -697,7 +698,7 @@ static void recalibrate(struct dp83640_clock *clock)
 		diff = now - (s64) phy2txts(&event_ts);
 		pr_info("slave offset %lld nanoseconds\n", diff);
 		diff += ADJTIME_FIX;
-		ts = ns_to_timespec(diff);
+		ts = ns_to_timespec64(diff);
 		tdr_write(0, tmp->phydev, &ts, PTP_STEP_CLK);
 	}
 
@@ -721,13 +722,23 @@ static inline u16 exts_chan_to_edata(int ch)
 }
 
 static int decode_evnt(struct dp83640_private *dp83640,
-		       void *data, u16 ests)
+		       void *data, int len, u16 ests)
 {
 	struct phy_txts *phy_txts;
 	struct ptp_clock_event event;
 	int i, parsed;
 	int words = (ests >> EVNT_TS_LEN_SHIFT) & EVNT_TS_LEN_MASK;
 	u16 ext_status = 0;
+
+	/* calculate length of the event timestamp status message */
+	if (ests & MULT_EVNT)
+		parsed = (words + 2) * sizeof(u16);
+	else
+		parsed = (words + 1) * sizeof(u16);
+
+	/* check if enough data is available */
+	if (len < parsed)
+		return len;
 
 	if (ests & MULT_EVNT) {
 		ext_status = *(u16 *) data;
@@ -747,10 +758,7 @@ static int decode_evnt(struct dp83640_private *dp83640,
 		dp83640->edata.ns_lo = phy_txts->ns_lo;
 	}
 
-	if (ext_status) {
-		parsed = words + 2;
-	} else {
-		parsed = words + 1;
+	if (!ext_status) {
 		i = ((ests >> EVNT_NUM_SHIFT) & EVNT_NUM_MASK) - EXT_EVENT;
 		ext_status = exts_chan_to_edata(i);
 	}
@@ -768,7 +776,7 @@ static int decode_evnt(struct dp83640_private *dp83640,
 		}
 	}
 
-	return parsed * sizeof(u16);
+	return parsed;
 }
 
 static int match(struct sk_buff *skb, unsigned int type, struct rxts *rxts)
@@ -784,7 +792,7 @@ static int match(struct sk_buff *skb, unsigned int type, struct rxts *rxts)
 
 	switch (type & PTP_CLASS_PMASK) {
 	case PTP_CLASS_IPV4:
-		offset += ETH_HLEN + IPV4_HLEN(data) + UDP_HLEN;
+		offset += ETH_HLEN + IPV4_HLEN(data + offset) + UDP_HLEN;
 		break;
 	case PTP_CLASS_IPV6:
 		offset += ETH_HLEN + IP6_HLEN + UDP_HLEN;
@@ -905,9 +913,9 @@ static void decode_status_frame(struct dp83640_private *dp83640,
 			decode_txts(dp83640, phy_txts);
 			size = sizeof(*phy_txts);
 
-		} else if (PSF_EVNT == type && len >= sizeof(*phy_txts)) {
+		} else if (PSF_EVNT == type) {
 
-			size = decode_evnt(dp83640, ptr, ests);
+			size = decode_evnt(dp83640, ptr, len, ests);
 
 		} else {
 			size = 0;
@@ -927,7 +935,7 @@ static int is_sync(struct sk_buff *skb, int type)
 
 	switch (type & PTP_CLASS_PMASK) {
 	case PTP_CLASS_IPV4:
-		offset += ETH_HLEN + IPV4_HLEN(data) + UDP_HLEN;
+		offset += ETH_HLEN + IPV4_HLEN(data + offset) + UDP_HLEN;
 		break;
 	case PTP_CLASS_IPV6:
 		offset += ETH_HLEN + IP6_HLEN + UDP_HLEN;
@@ -991,8 +999,8 @@ static void dp83640_clock_init(struct dp83640_clock *clock, struct mii_bus *bus)
 	clock->caps.pps		= 0;
 	clock->caps.adjfreq	= ptp_dp83640_adjfreq;
 	clock->caps.adjtime	= ptp_dp83640_adjtime;
-	clock->caps.gettime	= ptp_dp83640_gettime;
-	clock->caps.settime	= ptp_dp83640_settime;
+	clock->caps.gettime64	= ptp_dp83640_gettime;
+	clock->caps.settime64	= ptp_dp83640_settime;
 	clock->caps.enable	= ptp_dp83640_enable;
 	clock->caps.verify	= ptp_dp83640_verify;
 	/*
@@ -1129,7 +1137,6 @@ static void dp83640_remove(struct phy_device *phydev)
 	struct dp83640_clock *clock;
 	struct list_head *this, *next;
 	struct dp83640_private *tmp, *dp83640 = phydev->priv;
-	struct sk_buff *skb;
 
 	if (phydev->addr == BROADCAST_ADDR)
 		return;
@@ -1137,11 +1144,8 @@ static void dp83640_remove(struct phy_device *phydev)
 	enable_status_frames(phydev, false);
 	cancel_work_sync(&dp83640->ts_work);
 
-	while ((skb = skb_dequeue(&dp83640->rx_queue)) != NULL)
-		kfree_skb(skb);
-
-	while ((skb = skb_dequeue(&dp83640->tx_queue)) != NULL)
-		skb_complete_tx_timestamp(skb, NULL);
+	skb_queue_purge(&dp83640->rx_queue);
+	skb_queue_purge(&dp83640->tx_queue);
 
 	clock = dp83640_clock_get(dp83640->clock);
 
@@ -1398,7 +1402,7 @@ static void dp83640_txtstamp(struct phy_device *phydev,
 
 	case HWTSTAMP_TX_ONESTEP_SYNC:
 		if (is_sync(skb, type)) {
-			skb_complete_tx_timestamp(skb, NULL);
+			kfree_skb(skb);
 			return;
 		}
 		/* fall through */
@@ -1409,7 +1413,7 @@ static void dp83640_txtstamp(struct phy_device *phydev,
 
 	case HWTSTAMP_TX_OFF:
 	default:
-		skb_complete_tx_timestamp(skb, NULL);
+		kfree_skb(skb);
 		break;
 	}
 }

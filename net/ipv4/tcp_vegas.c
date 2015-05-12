@@ -51,7 +51,6 @@ MODULE_PARM_DESC(beta, "upper bound of packets in network");
 module_param(gamma, int, 0644);
 MODULE_PARM_DESC(gamma, "limit on increase (scale by 2)");
 
-
 /* There are several situations when we must "re-start" Vegas:
  *
  *  o when a connection is established
@@ -133,7 +132,6 @@ EXPORT_SYMBOL_GPL(tcp_vegas_pkts_acked);
 
 void tcp_vegas_state(struct sock *sk, u8 ca_state)
 {
-
 	if (ca_state == TCP_CA_Open)
 		vegas_enable(sk);
 	else
@@ -285,11 +283,10 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	/* Use normal slow start */
 	else if (tp->snd_cwnd <= tp->snd_ssthresh)
 		tcp_slow_start(tp, acked);
-
 }
 
 /* Extract info for Tcp socket info provided via netlink. */
-void tcp_vegas_get_info(struct sock *sk, u32 ext, struct sk_buff *skb)
+int tcp_vegas_get_info(struct sock *sk, u32 ext, struct sk_buff *skb)
 {
 	const struct vegas *ca = inet_csk_ca(sk);
 	if (ext & (1 << (INET_DIAG_VEGASINFO - 1))) {
@@ -300,8 +297,9 @@ void tcp_vegas_get_info(struct sock *sk, u32 ext, struct sk_buff *skb)
 			.tcpv_minrtt = ca->minRTT,
 		};
 
-		nla_put(skb, INET_DIAG_VEGASINFO, sizeof(info), &info);
+		return nla_put(skb, INET_DIAG_VEGASINFO, sizeof(info), &info);
 	}
+	return 0;
 }
 EXPORT_SYMBOL_GPL(tcp_vegas_get_info);
 
